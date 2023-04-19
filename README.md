@@ -1,1 +1,1 @@
-# global_temperature_model
+This Shiny app calculates and displays a simple linear model. The model fits known temperature data to four variables (radiative forcing due to carbon dioxide, solar activity, El Niño/Southern Oscillation, and atmospheric aerosols) in any combination then graphs the results of the model against actual global mean monthly temperatures.
