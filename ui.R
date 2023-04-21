@@ -32,7 +32,11 @@ ui <- fluidPage(
                         h3("Global temperature vs. selected variables"),
                         plotOutput("temperature_plot"),
                         h3("Model results"),
-                        verbatimTextOutput("summary_data")
+                        verbatimTextOutput("summary_data"),
+                        h3("Actual temperature trend"),
+                        verbatimTextOutput("actual_trend"),
+                        h3("Predicted temperature trend given selected variables"),
+                        verbatimTextOutput("predicted_trend")
                 ),
         ),
         hr(),

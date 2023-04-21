@@ -8,6 +8,7 @@
 #
 
 library(shiny)
+library(forecast)
 
 # Load the data
 
@@ -22,13 +23,18 @@ function(input, output) {
                         variables <- variables
                 })
                 formula <- paste("Temperature ~", paste(variables, collapse = " + "))
-                Climate.fit <- tslm(formula, data = global_temp)
-                autoplot(global_temp[, "Temperature"], series = "Actual") + 
-                        autolayer(fitted(Climate.fit), series = "Model") +
-                        xlab("Year") +
-                        ylab("Temperature anomaly (ºC)") +
-                        ggtitle("Predicted change in global mean temperature based on selected variables") +
-                        guides(colour = guide_legend(title = " "))
+                Climate.fit <- lm(formula, data = global_temp)
+                trendFitData <- data.frame(time = global_temp$time, temperatureFit = Climate.fit$fitted.values)
+                ggplot(data = global_temp, aes(x = time, y = Temperature, colour = "Actual")) + 
+                        theme_classic() +
+                        geom_line() +
+                        geom_smooth(method = "lm", formula = y ~ x, colour = "red") +
+                        geom_line(data = trendFitData, aes(x = time, y = temperatureFit, colour = "Predicted")) +
+                        geom_smooth(data = trendFitData, aes(x = time, y = temperatureFit), method = "lm", formula = y ~ x, colour = "blue") +
+                        labs(x = "Time",
+                             y = "Temperature anomaly (ºC)",
+                             main = "Actual vs predicted global mean temperature",
+                             sub = "Given selected variables")
         }
         
         output$temperature_plot <- renderPlot({
@@ -41,11 +47,31 @@ function(input, output) {
                         variables <- variables
                 })
                 formula <- paste("Temperature ~", paste(variables, collapse = " + "))
-                Climate.fit <- tslm(formula, data = global_temp)
+                Climate.fit <- lm(formula, data = global_temp)
                 summary(Climate.fit)
         }
         
         output$summary_data <- renderPrint({
                 create_summary(input$independent_variables)
+        })
+        
+        output$actual_trend <- renderPrint({
+                temp_trend <- lm(Temperature ~ time, data = global_temp)
+                summary(temp_trend)
+        })
+        
+        create_predicted_trend <- function(variables) {
+                observeEvent(input$goButton, {
+                        variables <- variables
+                })
+                formula <- paste("Temperature ~", paste(variables, collapse = " + "))
+                Climate.fit <- lm(formula, data = global_temp)
+                trendData <- data.frame(time = global_temp$time, Temperature = Climate.fit$fitted.values)
+                trendFit <- lm(Temperature ~ time, data = trendData)
+                summary(trendFit)
+        }
+        
+        output$predicted_trend <- renderPrint({
+                create_predicted_trend(input$independent_variables)
         })
 }

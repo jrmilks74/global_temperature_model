@@ -127,9 +127,10 @@ aerosols <- subset(aerosols, time >= "1958-03-01")
 
 df_list <- list(GISS, co2, sunspots, ENSO, aerosols)
 global_temp <- df_list %>%
-        reduce(inner_join, by = "time")
-
-global_temp <- ts_ts(ts_long(global_temp))
+        reduce(inner_join, by = "time") %>%
+        mutate(date = decimal_date(time)) %>%
+        select(date, Temperature, CO2, Solar, ENSO, Aerosols) %>%
+        rename(time = date)
 
 # Lag function
 calculate_lag <- function(timeseries1, timeseries2) {
