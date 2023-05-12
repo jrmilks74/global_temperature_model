@@ -12,7 +12,7 @@ library(tidyverse)
 library(forecast)
 library(mailtoR)
 
-# Define UI for application that draws a histogram
+# Define UI for application
 ui <- fluidPage(
         # Give your app a title
         titlePanel("Global Temperature Predictor"),

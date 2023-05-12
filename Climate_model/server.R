@@ -14,7 +14,7 @@ library(forecast)
 
 source("Data.R")
 
-# Define server logic required to draw a histogram
+# Define server logic
 function(input, output) {
         
         # Define a function to create the temperature model

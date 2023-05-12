@@ -72,14 +72,19 @@ co2 <- co2 %>%
 
 
 # Sunspot data
-sunspots <- read_table("https://www.sidc.be/silso/DATA/SN_m_tot_V2.0.txt",
-                       col_names = FALSE)
-sunspots <- sunspots %>%
-        rename(Year = X1, Month = X2, sunspots = X4) %>%
-        mutate(time = make_date(year = Year, month = Month, day = 1)) %>%
-        select(time, sunspots) %>%
-        subset(time >= "1958-03-01") %>%
-        rename("Solar" = sunspots)
+irradiance <- read_table("https://www2.mps.mpg.de/projects/sun-climate/data/SATIRE-T_SATIRE-S_TSI_1850_20220923.txt", 
+                         col_names = FALSE, 
+                         skip = 22) %>%
+        rename(time = X1, 
+               Solar = X2) %>%
+        select(time, Solar) %>%
+        mutate(daily = as.Date((time - 2396759), 
+                               origin = as.Date("1850-01-01"))) %>%
+        select(daily, Solar) %>%
+        mutate(time = floor_date(daily, "month")) %>%
+        group_by(time) %>%
+        summarise(Solar = mean(Solar, na.rm = TRUE)) %>%
+        subset(time >= "1958-03-01")
 
 # ENSO data
 
@@ -125,7 +130,7 @@ aerosols <- subset(aerosols, time >= "1958-03-01")
 
 # Make data frame
 
-df_list <- list(GISS, co2, sunspots, ENSO, aerosols)
+df_list <- list(GISS, co2, irradiance, ENSO, aerosols)
 global_temp <- df_list %>%
         reduce(inner_join, by = "time") %>%
         mutate(date = decimal_date(time)) %>%
