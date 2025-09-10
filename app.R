@@ -1,4 +1,5 @@
-# app.R — Global Temperature Predictor (clean, JSON-safe, lag-safe)
+# app.R — Global Temperature Regression (volcanic-ready, lag-safe, JSON-safe)
+
 library(shiny)
 library(tidyverse)
 library(lubridate)
@@ -9,15 +10,48 @@ library(lmtest)
 library(sandwich)
 library(scales)
 library(ncdf4)
-library(mailtoR)
 
-# Ensure Shiny uses JSON named lists (prevents jsonlite named-vector warnings)
+# Prevent jsonlite named-vector warnings in Shiny
 options(shiny.json.use.named.list = TRUE)
 
 # ---------- Small helpers ----------
 read_lines_safely <- function(url) tryCatch(readr::read_lines(url, progress = FALSE), error = function(e) character())
 read_table_safely <- function(url, ...) tryCatch(readr::read_table(url, ...), error = function(e) tibble())
 `%||%` <- function(a, b) if (is.null(a)) b else a
+
+# ---------- Volcanic eruptions + regressor ----------
+eruption_table <- function() {
+        tibble::tribble(
+                ~date,              ~name,          ~weight, ~note,
+                as.Date("1963-03-17"), "Agung",        0.50,  "cooling",
+                as.Date("1974-10-14"), "Fuego",        0.15,  "cooling",
+                as.Date("1982-04-04"), "El Chichón",   0.60,  "cooling",
+                as.Date("1991-06-15"), "Pinatubo",     1.00,  "cooling",
+                as.Date("2008-08-07"), "Kasatochi",    0.10,  "cooling",
+                as.Date("2009-06-12"), "Sarychev",     0.10,  "cooling",
+                as.Date("2011-06-12"), "Nabro",        0.12,  "cooling",
+                as.Date("2015-04-22"), "Calbuco",      0.12,  "cooling",
+                as.Date("2019-06-21"), "Raikoke",      0.12,  "cooling",
+                as.Date("2022-01-15"), "Hunga Tonga", -0.20,  "warming (H2O)"
+        )
+}
+
+# Volcanic pulse series: sum_i weight_i * exp(-(t - t_i)/tau) for t >= t_i (monthly)
+build_volcanic_pulse <- function(time_index, tau_months = 18L, eruptions = eruption_table()) {
+        if (length(time_index) == 0) return(tibble(time = time_index, Volcanic = numeric(0)))
+        tau <- as.numeric(tau_months)
+        out <- numeric(length(time_index))
+        for (i in seq_len(nrow(eruptions))) {
+                ti <- eruptions$date[i]
+                wi <- eruptions$weight[i]
+                mask <- time_index >= ti
+                if (any(mask)) {
+                        dtm <- (lubridate::interval(ti, time_index[mask]) %/% months(1))
+                        out[mask] <- out[mask] + wi * exp(-pmax(dtm, 0) / tau)
+                }
+        }
+        tibble(time = time_index, Volcanic = out)
+}
 
 # ---------- Data loaders ----------
 # 1) GISTEMP Land+Ocean monthly (robust parser)
@@ -43,7 +77,8 @@ load_gistemp <- function(min_date = as.Date("1958-03-01")) {
         tibble(Year = years) |>
                 bind_cols(as_tibble(months_mat)) |>
                 pivot_longer(all_of(month.abb), names_to = "Mon", values_to = "anomaly_x100") |>
-                mutate(time = dmy(paste0("01-", Mon, "-", Year)), Temperature = anomaly_x100 / 100) |>
+                mutate(time = dmy(paste0("01-", Mon, "-", Year)),
+                       Temperature = anomaly_x100 / 100) |>
                 select(time, Temperature) |>
                 arrange(time) |>
                 filter(time >= min_date) |>
@@ -71,7 +106,7 @@ read_satire_s <- function(url = "https://www2.mps.mpg.de/projects/sun-climate/da
         if (!length(raw)) return(tibble(JD = numeric(), TSI = numeric(), date = as.Date(character())))
         readr::read_table(
                 paste(raw, collapse = "\n"),
-                col_names = c("JD", "TSI", "lo", "hi", "source"),
+                col_names = c("JD","TSI","lo","hi","source"),
                 col_types = cols(JD = col_double(), TSI = col_double(), lo = col_double(), hi = col_double(), source = col_double()),
                 na = c("NaN"), show_col_types = FALSE
         ) |>
@@ -130,7 +165,8 @@ load_aerosols_crest <- function(min_date = as.Date("1958-03-01"), use_interpolat
         time_v <- ncvar_get(nc, "time")
         units  <- ncatt_get(nc, "time", "units")$value
         origin <- sub(".*since\\s+", "", units); origin <- sub("\\s+0:0:0(\\.0)?$", "", origin)
-        dates  <- as.Date(origin) + as.integer(time_v); time_m <- floor_date(dates, "month")
+        dates  <- as.Date(origin) + as.integer(time_v)
+        time_m <- floor_date(dates, "month")
         
         if (!use_interpolated) {
                 saod_g <- ncvar_get(nc, "Global_SAOD"); aeros <- tibble(time = time_m, Aerosols = as.numeric(saod_g))
@@ -150,7 +186,8 @@ load_aerosols_giss <- function(min_date = as.Date("1958-03-01")) {
         gcol <- if ("global" %in% names(sato)) "global" else names(sato)[grepl("glob", names(sato), ignore.case = TRUE)][1]
         sato |>
                 rename(time_dec = all_of(tcol), Aerosols = all_of(gcol)) |>
-                mutate(time = date_decimal(time_dec), time = as.Date(format(time, "%Y-%m-01"))) |>
+                mutate(time = date_decimal(time_dec),
+                       time = as.Date(format(time, "%Y-%m-01"))) |>
                 arrange(time) -> aeros
         last_t <- max(aeros$time, na.rm = TRUE)
         if (last_t < floor_date(Sys.Date(), "month")) {
@@ -198,20 +235,22 @@ fit_and_score <- function(df, spec) {
         tibble(formula = deparse(f), adj_r2 = summary(m)$adj.r.squared, AICc = AICc(m), model = list(m))
 }
 nw_trend <- function(y, tnum, lag = 12) {
-        m <- lm(y ~ tnum); co <- coeftest(m, vcov. = NeweyWest(m, lag = lag, prewhite = FALSE)); list(model = m, coefs = co)
+        m <- lm(y ~ tnum); co <- coeftest(m, vcov. = NeweyWest(m, lag = lag, prewhite = FALSE))
+        list(model = m, coefs = co)
 }
 
 # ---------- Lags (warning-proof) ----------
 apply_lags <- function(df,
-                       lag_co2 = 0L, lag_solar = 0L, lag_enso = 0L, lag_aer = 0L,
-                       use_vars = c("CO2","Solar","ENSO","Aerosols")) {
+                       lag_co2 = 0L, lag_solar = 0L, lag_enso = 0L, lag_aer = 0L, lag_volc = 0L,
+                       use_vars = c("CO2","Solar","ENSO","Aerosols","Volcanic")) {
         dfl <- df
-        if ("CO2" %in% use_vars)      dfl$CO2_L      <- dplyr::lag(dfl$CO2,      n = as.integer(lag_co2))
-        if ("Solar" %in% use_vars)    dfl$Solar_L    <- dplyr::lag(dfl$Solar,    n = as.integer(lag_solar))
-        if ("ENSO" %in% use_vars)     dfl$ENSO_L     <- dplyr::lag(dfl$ENSO,     n = as.integer(lag_enso))
-        if ("Aerosols" %in% use_vars) dfl$Aerosols_L <- dplyr::lag(dfl$Aerosols, n = as.integer(lag_aer))
+        if ("CO2" %in% use_vars)       dfl$CO2_L       <- dplyr::lag(dfl$CO2,       n = as.integer(lag_co2))
+        if ("Solar" %in% use_vars)     dfl$Solar_L     <- dplyr::lag(dfl$Solar,     n = as.integer(lag_solar))
+        if ("ENSO" %in% use_vars)      dfl$ENSO_L      <- dplyr::lag(dfl$ENSO,      n = as.integer(lag_enso))
+        if ("Aerosols" %in% use_vars)  dfl$Aerosols_L  <- dplyr::lag(dfl$Aerosols,  n = as.integer(lag_aer))
+        if ("Volcanic" %in% use_vars)  dfl$Volcanic_L  <- dplyr::lag(dfl$Volcanic,  n = as.integer(lag_volc))
         
-        name_map <- c(CO2 = "CO2_L", Solar = "Solar_L", ENSO = "ENSO_L", Aerosols = "Aerosols_L")
+        name_map <- c(CO2 = "CO2_L", Solar = "Solar_L", ENSO = "ENSO_L", Aerosols = "Aerosols_L", Volcanic = "Volcanic_L")
         needed <- unique(c("Temperature", "t_num", unname(name_map[intersect(use_vars, names(name_map))])))
         tidyr::drop_na(dfl, dplyr::all_of(needed))
 }
@@ -222,11 +261,11 @@ build_lag_grid <- function(preds, minmax, step) {
         if ("Solar"    %in% preds) grids$lag_solar <- seqr(minmax$sol_min,   minmax$sol_max,   step)
         if ("ENSO"     %in% preds) grids$lag_enso  <- seqr(minmax$enso_min,  minmax$enso_max,  step)
         if ("Aerosols" %in% preds) grids$lag_aer   <- seqr(minmax$aer_min,   minmax$aer_max,   step)
-        if (length(grids) == 0L) return(tibble(dummy = 0L) |> select(-dummy))
+        if ("Volcanic" %in% preds) grids$lag_volc  <- seqr(minmax$volc_min,  minmax$volc_max,  step)
+        if (length(grids) == 0L) return(tibble(dummy = 0L) |> dplyr::select(-dummy))
         tidyr::expand_grid(!!!grids)
 }
 fit_with_lags <- function(df, preds, spec_vars, lags_row) {
-        # Safely pull lag values present in this grid row
         get_lag <- function(nm) if (!is.null(lags_row[[nm]])) as.integer(lags_row[[nm]]) else 0L
         
         dfl <- apply_lags(
@@ -235,10 +274,11 @@ fit_with_lags <- function(df, preds, spec_vars, lags_row) {
                 lag_solar = get_lag("lag_solar"),
                 lag_enso  = get_lag("lag_enso"),
                 lag_aer   = get_lag("lag_aer"),
+                lag_volc  = get_lag("lag_volc"),
                 use_vars  = spec_vars
         )
         
-        name_map <- c(CO2 = "CO2_L", Solar = "Solar_L", ENSO = "ENSO_L", Aerosols = "Aerosols_L")
+        name_map <- c(CO2 = "CO2_L", Solar = "Solar_L", ENSO = "ENSO_L", Aerosols = "Aerosols_L", Volcanic = "Volcanic_L")
         use_cols <- unname(name_map[spec_vars])
         
         f <- as.formula(paste("Temperature ~", paste(use_cols, collapse = " + ")))
@@ -253,7 +293,8 @@ fit_with_lags <- function(df, preds, spec_vars, lags_row) {
                 lag_co2   = get_lag("lag_co2"),
                 lag_solar = get_lag("lag_solar"),
                 lag_enso  = get_lag("lag_enso"),
-                lag_aer   = get_lag("lag_aer")
+                lag_aer   = get_lag("lag_aer"),
+                lag_volc  = get_lag("lag_volc")
         )
 }
 
@@ -264,15 +305,15 @@ ui <- fluidPage(
                 sidebarPanel(
                         checkboxGroupInput(
                                 "iv", "Select independent variables:",
-                                choices  = list("CO2"="CO2","Solar"="Solar","ENSO"="ENSO","Aerosols"="Aerosols"),
+                                choices  = list("CO2"="CO2","Solar"="Solar","ENSO"="ENSO","Aerosols"="Aerosols","Volcanic"="Volcanic"),
                                 selected = c("CO2","Solar","ENSO","Aerosols")
                         ),
                         selectInput(
-                                  "start_year",
-                                  label = "Analysis start year:",
-                                  choices = 1958:year(Sys.Date()),
-                                  selected = 1979
-                                ),
+                                "start_year",
+                                label = "Analysis start year:",
+                                choices = 1958:year(Sys.Date()),
+                                selected = 1974
+                        ),
                         radioButtons("aer_source", "Aerosol dataset:",
                                      choices = list("CREST (NetCDF, 750 nm)"="crest", "GISS Sato (to 2012, bg extended)"="giss"),
                                      selected = "crest"),
@@ -297,7 +338,18 @@ ui <- fluidPage(
                                 column(6, sliderInput("lag_aerosol_min", "Aerosol min", min = 0, max = 48, value = 12, step = 1, sep = "")),
                                 column(6, sliderInput("lag_aerosol_max", "Aerosol max", min = 0, max = 48, value = 36, step = 1, sep = ""))
                         ),
+                        fluidRow(
+                                column(6, sliderInput("lag_volc_min", "Volcanic min", min = 0, max = 48, value = 0, step = 1, sep = "")),
+                                column(6, sliderInput("lag_volc_max", "Volcanic max", min = 0, max = 48, value = 12, step = 1, sep = ""))
+                        ),
                         sliderInput("lag_step", "Lag step", min = 1, max = 6, value = 3, step = 1, sep = "", ticks = TRUE),
+                        tags$hr(),
+                        strong("Volcanic signal"),
+                        checkboxInput("use_volcanic_pulse", "Include Volcanic pulse regressor", FALSE),
+                        numericInput("volc_tau", "Volcanic decay time (months)", value = 18, min = 1, max = 60, step = 1),
+                        checkboxInput("shade_volcanoes", "Shade eruption periods on plot", TRUE),
+                        sliderInput("shade_months", "Shade duration after eruption (months)",
+                                    min = 1, max = 36, value = 18, step = 1, sep = ""),
                         actionButton("go", "Find Best Model")
                 ),
                 mainPanel(
@@ -325,24 +377,18 @@ ui <- fluidPage(
                         ),
                         hr(),
                         tags$small(
-                                "Sources: NASA/PSL GISTEMP monthly; NOAA GML CO2 monthly; SATIRE-T & SATIRE-S TSI; ",
-                                "PSL Niño 3.4 monthly; CREST NetCDF (or GISS Sato) aerosols. Updated ",
+                                "Sources: NASA/PSL GISTEMP; NOAA GML CO2; SATIRE TSI; PSL Niño 3.4; CREST NetCDF (or GISS Sato) aerosols. Updated ",
                                 format(Sys.Date(), "%d %b %Y")
                         )
                 )
-        ),
-        hr(),
-        h5("Created by: Jim Milks"),
-        mailtoR(email = "jrmilks@gmail.com",
-                "Contact admin"),
-        br(),
-        "9 Sep 2025"
+        )
 )
 
 # ---------- Server ----------
 server <- function(input, output, session) {
         
         base_data <- reactiveVal(NULL)
+        
         observeEvent(input$go, {
                 df <- build_dataset(input$start_year, input$aer_source, input$aer_interp)
                 validate(need(nrow(df) > 24, "Not enough overlapping monthly records after start year."))
@@ -352,17 +398,28 @@ server <- function(input, output, session) {
         results <- eventReactive(input$go, {
                 df <- base_data()
                 validate(need(!is.null(df), "Click 'Find Best Model' to run."))
-                preds <- intersect(input$iv, c("CO2","Solar","ENSO","Aerosols"))
+                
+                # Build volcanic series (always compute; include in model only if user opts in)
+                vol <- build_volcanic_pulse(time_index = df$time, tau_months = as.integer(input$volc_tau))
+                df <- dplyr::left_join(df, vol, by = "time")
+                df$Volcanic[is.na(df$Volcanic)] <- 0
+                
+                user_preds <- intersect(input$iv, c("CO2","Solar","ENSO","Aerosols","Volcanic"))
+                if (!isTRUE(input$use_volcanic_pulse)) {
+                        user_preds <- setdiff(user_preds, "Volcanic")
+                }
+                preds <- user_preds
                 validate(need(length(preds) > 0, "Select at least one predictor."))
                 
                 specs <- enumerate_models(preds)
                 
-                # Build lag grid respecting selected predictors
+                # Lag grid
                 minmax <- list(
-                        co2_min  = input$lag_co2_min,   co2_max  = input$lag_co2_max,
-                        sol_min  = input$lag_solar_min, sol_max  = input$lag_solar_max,
-                        enso_min = input$lag_enso_min,  enso_max = input$lag_enso_max,
-                        aer_min  = input$lag_aerosol_min, aer_max = input$lag_aerosol_max
+                        co2_min  = input$lag_co2_min,    co2_max  = input$lag_co2_max,
+                        sol_min  = input$lag_solar_min,  sol_max  = input$lag_solar_max,
+                        enso_min = input$lag_enso_min,   enso_max = input$lag_enso_max,
+                        aer_min  = input$lag_aerosol_min,aer_max  = input$lag_aerosol_max,
+                        volc_min = input$lag_volc_min,   volc_max = input$lag_volc_max
                 )
                 grid <- build_lag_grid(preds, minmax, step = input$lag_step)
                 
@@ -381,9 +438,9 @@ server <- function(input, output, session) {
                                         spec_vars <- trimws(unlist(strsplit(s, "\\+"), use.names = FALSE))
                                         fit_with_lags(df, preds, spec_vars, lr)
                                 })
-                        }) |> arrange(AICc, desc(adj_r2))
+                        }) |> dplyr::arrange(AICc, dplyr::desc(adj_r2))
                         
-                        best <- scored |> slice(1)
+                        best <- scored |> dplyr::slice(1)
                         best_spec_vars <- trimws(unlist(strsplit(gsub("^Temperature ~\\s*", "", best$formula[[1]]), "\\+"), use.names = FALSE))
                         
                         df_best <- apply_lags(
@@ -392,16 +449,16 @@ server <- function(input, output, session) {
                                 lag_solar = best$lag_solar,
                                 lag_enso  = best$lag_enso,
                                 lag_aer   = best$lag_aer,
+                                lag_volc  = best$lag_volc,
                                 use_vars  = best_spec_vars
                         )
-                        
                         list(df = df_best, scored = scored, best = best)
                 } else {
                         scored <- tibble(spec = specs) |>
-                                mutate(res = purrr::map(spec, ~fit_and_score(df, .x))) |>
+                                dplyr::mutate(res = purrr::map(spec, ~fit_and_score(df, .x))) |>
                                 tidyr::unnest(res) |>
-                                arrange(AICc, desc(adj_r2))
-                        best <- scored |> slice(1)
+                                dplyr::arrange(AICc, dplyr::desc(adj_r2))
+                        best <- scored |> dplyr::slice(1)
                         list(df = df, scored = scored, best = best)
                 }
         })
@@ -436,20 +493,41 @@ server <- function(input, output, session) {
                         slice(1:10)
         })
         
-        # Plot observed vs predicted
+        # Plot observed vs predicted (with optional eruption shading)
         output$plot_fit <- renderPlot({
                 rz <- results(); if (is.null(rz)) return(invisible())
                 m  <- rz$best$model[[1]]
-                df <- rz$df |> mutate(Predicted = as.numeric(predict(m, newdata = rz$df)))
-                df |>
-                        transmute(time, `Actual temperature` = Temperature, `Predicted (model)` = Predicted) |>
-                        pivot_longer(-time, names_to = "Series", values_to = "Value") |>
-                        ggplot(aes(time, Value, color = Series)) +
-                        geom_line(linewidth = 0.8, na.rm = TRUE) +
+                df <- rz$df |> dplyr::mutate(Predicted = as.numeric(predict(m, newdata = rz$df)))
+                
+                p <- ggplot(df, aes(time)) +
                         labs(x = NULL, y = "Temperature anomaly (°C)",
                              title = "Observed vs Predicted Global Temperature",
                              subtitle = "Best linear model on selected drivers (AICc)") +
-                        theme_classic() +
+                        theme_classic()
+                
+                if (isTRUE(input$shade_volcanoes)) {
+                        erup <- eruption_table()
+                        if (nrow(erup)) {
+                                shade_df <- erup |>
+                                        dplyr::mutate(xmin = date,
+                                                      xmax = date %m+% months(input$shade_months),
+                                                      ymin = -Inf, ymax = Inf)
+                                p <- p + ggplot2::geom_rect(data = shade_df,
+                                                            aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+                                                            inherit.aes = FALSE, alpha = 0.10)
+                                p <- p + ggplot2::geom_vline(data = erup,
+                                                             aes(xintercept = as.numeric(date)),
+                                                             linetype = "dashed", alpha = 0.25)
+                        }
+                }
+                
+                df_long <- df |>
+                        dplyr::transmute(time,
+                                         `Actual temperature` = Temperature,
+                                         `Predicted (model)`  = Predicted) |>
+                        tidyr::pivot_longer(-time, names_to = "Series", values_to = "Value")
+                
+                p + ggplot2::geom_line(data = df_long, aes(y = Value, color = Series), linewidth = 0.8, na.rm = TRUE) +
                         guides(color = guide_legend(title = NULL))
         })
         
@@ -475,17 +553,17 @@ server <- function(input, output, session) {
         output$fit_trend <- renderPrint({
                 rz <- results(); if (is.null(rz)) return(invisible())
                 m  <- rz$best$model[[1]]
-                df <- rz$df |> mutate(Pred = as.numeric(predict(m, newdata = rz$df)))
+                df <- rz$df |> dplyr::mutate(Pred = as.numeric(predict(m, newdata = rz$df)))
                 res <- nw_trend(df$Pred, df$t_num)
                 cat("Slope =", round(coef(res$model)[2], 5), "°C per year\n"); print(res$coefs)
         })
         
-        # Selected lags table (only variables present in best model)
+        # Selected lags (only variables in best model)
         output$best_lag_table <- renderTable({
                 rz <- results(); if (is.null(rz)) return(NULL)
                 spec_vars <- trimws(unlist(strsplit(gsub("^Temperature ~\\s*", "", rz$best$formula[[1]]), "\\+"), use.names = FALSE))
-                lag_map <- c(CO2 = "lag_co2", Solar = "lag_solar", ENSO = "lag_enso", Aerosols = "lag_aer")
-                tibble::tibble(
+                lag_map <- c(CO2 = "lag_co2", Solar = "lag_solar", ENSO = "lag_enso", Aerosols = "lag_aer", Volcanic = "lag_volc")
+                tibble(
                         Variable      = spec_vars,
                         Optimized_lag = vapply(lag_map[spec_vars], function(nm) {
                                 if (!is.null(rz$best[[nm]])) as.integer(rz$best[[nm]]) else 0L
