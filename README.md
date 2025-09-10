@@ -58,8 +58,9 @@ install.packages(c(
   "shiny","tidyverse","lubridate","readr","broom",
   "AICcmodavg","lmtest","sandwich","scales","ncdf4"
 ))
+```
 
-How Volcanic Signal Works
+## How Volcanic Signal Works
 
 The app defines a pulse regressor:
 
@@ -74,7 +75,7 @@ On the plot, eruptions can also be shaded for visual inspection.
 
 ⸻
 
-Usage
+## Usage
 	1.	Select predictors (checkboxes)
 	2.	Choose start year (dropdown)
 	3.	Pick aerosol dataset (CREST or GISS fallback)
@@ -86,7 +87,7 @@ Tabs include Best Model summary, Top 10 models, Trends, Diagnostics, Data covera
 
 ⸻
 
-Attribution
+## Attribution
 	•	Data: NASA GISTEMP, NOAA GML/PSL, SATIRE (MPS), CREST, GISS Sato
 	•	Volcanic eruption list: compiled from peer-reviewed climate literature
 
