@@ -267,8 +267,12 @@ ui <- fluidPage(
                                 choices  = list("CO2"="CO2","Solar"="Solar","ENSO"="ENSO","Aerosols"="Aerosols"),
                                 selected = c("CO2","Solar","ENSO","Aerosols")
                         ),
-                        sliderInput("start_year", "Analysis start year:",
-                                    min = 1958, max = year(Sys.Date()), value = 1979, step = 1, sep = ""),
+                        selectInput(
+                                  "start_year",
+                                  label = "Analysis start year:",
+                                  choices = 1958:year(Sys.Date()),
+                                  selected = 1979
+                                ),
                         radioButtons("aer_source", "Aerosol dataset:",
                                      choices = list("CREST (NetCDF, 750 nm)"="crest", "GISS Sato (to 2012, bg extended)"="giss"),
                                      selected = "crest"),
