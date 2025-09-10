@@ -65,7 +65,7 @@ install.packages(c(
 The app defines a pulse regressor:
 
 $$
-V(t) = \sum_i w_i \,\exp\!\left(-\frac{\max(0,\, t - t_i)}{\tau}\right)
+V(t) = \sum_i w_i \,\exp\left(-\frac{\max(0,\, t - t_i)}{\tau}\right)
 $$
 
 - \(t_i\): eruption onset month  
@@ -73,9 +73,6 @@ $$
 - \(\tau\): decay constant in months (default 18)  
 
 On the plot, eruptions can also be shaded for visual inspection.
-
-> If your markdown viewer doesn’t support LaTeX, use this plain-text form:
-> `V(t) = Σ_i w_i * exp(-(max(0, t - t_i))/τ)`
 
 ⸻
 
