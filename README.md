@@ -68,9 +68,9 @@ $$
 V(t) = \sum_i w_i \,\exp\left(-\frac{\max(0,\, t - t_i)}{\tau}\right)
 $$
 
-- \(t_i\): eruption onset month  
-- \(w_i\): eruption weight (positive = cooling, negative = warming)  
-- \(\tau\): decay constant in months (default 18)  
+- $$t_i$$: eruption onset month  
+- $$w_i$$: eruption weight (positive = cooling, negative = warming)  
+- $$τ$$: decay constant in months (default 18)  
 
 On the plot, eruptions can also be shaded for visual inspection.
 
