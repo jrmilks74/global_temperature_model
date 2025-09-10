@@ -1,4 +1,4 @@
-# Global Temperature Regression — Shiny App
+# Global Temperature Predictor — Shiny App
 
 A single-file Shiny app that models global surface temperature anomalies using a set of physical drivers with optional lag optimization:
 
